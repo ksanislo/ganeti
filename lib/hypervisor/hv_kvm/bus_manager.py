@@ -32,6 +32,7 @@ from dataclasses import field
 from typing import Dict, Set, NamedTuple, Any, List
 
 from ganeti import constants
+from ganeti import errors
 
 
 class BusAllocation(NamedTuple):
@@ -162,6 +163,66 @@ class SCSIAllocator(PCIAllocator):
       if "bus" in device_info and device_info["bus"] == self._SCSI_BUS:
         slot = device_info["scsi-id"]
         self._occupied_slots.add(slot)
+
+
+class IDEAllocator:
+  """Allocator for IDE bus slots.
+
+  IDE controllers have a fixed topology of two buses with two units each,
+  giving a maximum of 4 devices:
+    slot 0 -> ide.0, unit 0 (primary-master)
+    slot 1 -> ide.0, unit 1 (primary-slave)
+    slot 2 -> ide.1, unit 0 (secondary-master)
+    slot 3 -> ide.1, unit 1 (secondary-slave)
+
+  Unlike PCI/SCSI, IDE is not hotpluggable and has a fixed maximum of 4
+  devices. This allocator is used directly rather than through
+  BusAllocatorManager since IDE devices (both hard drives and CDROMs)
+  share the same slot space but flow through different code paths.
+
+  """
+  MAX_IDE_DEVICES = 4
+
+  def __init__(self, start_slot=0):
+    self._next_slot = start_slot
+
+  def get_bus_unit(self):
+    """Return the next available IDE (bus, unit) tuple and advance.
+
+    @rtype: tuple of (str, int)
+    @return: (bus, unit)
+    @raise errors.HypervisorError: if no more IDE slots available
+
+    """
+    if self._next_slot >= self.MAX_IDE_DEVICES:
+      raise errors.HypervisorError(
+        "Too many IDE devices: slot %d exceeds maximum of %d"
+        % (self._next_slot, self.MAX_IDE_DEVICES))
+    bus = "ide.%d" % (self._next_slot // 2)
+    unit = self._next_slot % 2
+    self._next_slot += 1
+    return (bus, unit)
+
+  @property
+  def allocated(self):
+    """Return the number of slots allocated so far."""
+    return self._next_slot
+
+  def validate_count(self, disk_count, cdrom_count):
+    """Validate that the total IDE device count doesn't exceed the maximum.
+
+    @type disk_count: int
+    @param disk_count: number of IDE hard drives
+    @type cdrom_count: int
+    @param cdrom_count: number of IDE CDROMs
+    @raise errors.HypervisorError: if total exceeds MAX_IDE_DEVICES
+
+    """
+    total = disk_count + cdrom_count
+    if total > self.MAX_IDE_DEVICES:
+      raise errors.HypervisorError(
+        "Too many IDE devices: %d IDE disks + %d IDE CDROMs exceeds"
+        " maximum of %d" % (disk_count, cdrom_count, self.MAX_IDE_DEVICES))
 
 
 class BusAllocatorManager:
